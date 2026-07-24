@@ -1,0 +1,10 @@
+[wrap-git]
+directory = fatfs-rs
+url = https://github.com/rafalh/rust-fatfs
+revision = 4eccb50d011146fbed20e133d33b22f3c27292e7
+depth = 1
+method = cargo
+patch_directory = fatfs-rs
+
+[provide]
+dependency_names = fatfs-0.4-rs

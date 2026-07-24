@@ -1,0 +1,9 @@
+[wrap-file]
+directory = log-0.4.33
+source_url = https://crates.io/api/v1/crates/log/0.4.33/download
+source_filename = log-0.4.33.tar.gz
+source_hash = 0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad
+method = cargo
+
+[provide]
+dependency_names = log-0.4-rs

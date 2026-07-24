@@ -1,0 +1,10 @@
+[wrap-file]
+directory = uuid-1.23.4
+source_url = https://crates.io/api/v1/crates/uuid/1.23.4/download
+source_filename = uuid-1.23.4.tar.gz
+source_hash = bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53
+method = cargo
+patch_directory = uuid-rs
+
+[provide]
+dependency_names = uuid-1-rs

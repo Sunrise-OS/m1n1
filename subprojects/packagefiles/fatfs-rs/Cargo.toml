@@ -1,0 +1,57 @@
+[package]
+name = "fatfs"
+version = "0.4.0"
+authors = ["Rafał Harabień <rafalh92@outlook.com>"]
+edition = "2021"
+rust-version = "1.65"
+repository = "https://github.com/rafalh/rust-fatfs"
+readme = "README.md"
+keywords = ["fat", "filesystem", "no_std"]
+categories = ["filesystem"]
+license = "MIT"
+description = """
+FAT filesystem library.
+"""
+exclude = [
+    "resources/*",
+]
+
+[features]
+# Use Rust std library
+std = []
+# LFN (Long File Name) support
+lfn = []
+# Use dynamic allocation. When used without std please enable core_io/collections
+alloc = []
+# Full Unicode support. Disabling it reduces code size by avoiding Unicode-aware character case conversion
+unicode = []
+# Enable only error-level logging
+log_level_error = []
+# Enable logging levels warn and up
+log_level_warn  = ["log_level_error"]
+# Enable logging levels info and up
+log_level_info  = ["log_level_warn"]
+# Enable logging levels debug and up
+log_level_debug = ["log_level_info"]
+# Enable all logging levels: trace and up
+log_level_trace = ["log_level_debug"]
+
+# Default features
+#
+# NOTE: patched by subprojects/packagefiles/fatfs-rs for the m1n1 Meson
+# build: the upstream default feature set pulls in `chrono` (and thus a deep
+# transitive dependency tree with no vendored wraps here). m1n1's own
+# rust/Cargo.toml only ever used fatfs with `default-features = false,
+# features = ["lfn", "alloc"]`, which never needed chrono/std/unicode, so
+# just make that the new default to match what Meson's Cargo-wrap feature
+# resolution actually ends up requesting.
+default = ["alloc", "lfn", "log_level_trace"]
+
+[dependencies]
+bitflags = { version = "2", default-features = false }
+log = { version = "0.4", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+
+[dev-dependencies]
+env_logger = "0.9"
+fscommon = "0.1"

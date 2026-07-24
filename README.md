@@ -2,8 +2,11 @@
 
 ## Building
 
-You need an `aarch64-linux-gnu-gcc` cross-compiler toolchain (or a native one, if running on ARM64).
-You will also need to install the `aarch64-unknown-none-softfloat` toolchain for rust.
+m1n1 uses [Meson](https://mesonbuild.com/). You need Meson >= 1.4.0, Ninja, and
+an aarch64 bare-metal toolchain (either LLVM/clang+lld, or an
+`aarch64-linux-gnu-gcc` cross-compiler / a native one if running on ARM64).
+You will also need to install the `aarch64-unknown-none-softfloat` toolchain
+for rust.
 
 ```shell
 $ rustup target add aarch64-unknown-none-softfloat
@@ -12,26 +15,32 @@ $ rustup target add aarch64-unknown-none-softfloat
 ```shell
 $ git clone --recursive https://github.com/AsahiLinux/m1n1.git
 $ cd m1n1
-$ make
+$ meson setup build --cross-file cross/aarch64-linux-gnu.ini
+$ ninja -C build
 ```
 
 To build on a native ARM64 machine:
-* On Linux, use `make ARCH=`.
-* On macOS using Homebrew:
+* On Linux, using an `aarch64-linux-gnu-gcc` cross toolchain (works natively too):
+```shell
+$ meson setup build --cross-file cross/aarch64-linux-gnu.ini
+$ ninja -C build
+```
+* On macOS using Homebrew LLVM/lld:
 ```shell
 $ brew install llvm lld
-$ make
-```
-* On macOS using MacPorts:
-```shell
-$ sudo port install llvm clang
-$ sudo port select llvm llvm-mp-<version>
-$ make
+$ PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH" \
+    meson setup build --cross-file cross/aarch64-clang.ini
+$ ninja -C build
 ```
 
-The output will be in `build/m1n1.macho`.
+The output will be in `build/m1n1.macho` and `build/m1n1.bin`.
 
-To build verbosely, use `make V=1`.
+Useful options (pass as `-Doption=value` to `meson setup`, or
+`meson configure build -Doption=value` afterwards):
+* `-Drelease=true` — release build (matches old `RELEASE=1`)
+* `-Dchainloading=true` — enable chainloading support (matches old `CHAINLOADING=1`)
+
+To build verbosely, use `ninja -C build -v`.
 
 ### Building using the container setup
 
@@ -40,9 +49,9 @@ If you have a container runtime installed, like Podman or Docker, you can make u
 ```shell
 $ git clone --recursive https://github.com/AsahiLinux/m1n1.git
 $ cd m1n1
-$ podman-compose run m1n1 make
+$ podman-compose run m1n1 sh -c 'meson setup build --cross-file cross/aarch64-linux-gnu.ini && ninja -C build'
 $ # or
-$ docker-compose run m1n1 make
+$ docker-compose run m1n1 sh -c 'meson setup build --cross-file cross/aarch64-linux-gnu.ini && ninja -C build'
 ```
 
 ## Usage

@@ -1,0 +1,12 @@
+option(
+    'chainloading',
+    type: 'boolean',
+    value: false,
+    description: 'Enable chainloading support',
+)
+option(
+    'release',
+    type: 'boolean',
+    value: false,
+    description: 'Build a release image',
+)
