@@ -62,6 +62,61 @@ To install on an OS container based on macOS >=12.1, use `m1n1.bin`:
 kmutil configure-boot -c m1n1.bin --raw --entry-point 2048 --lowest-virtual-address 0 -v <path to your OS volume>
 ```
 
+## Google GS201 / Pixel 7a ("lynx")
+
+This tree also builds for Google's GS201 (Tensor G2). ABL loads it as an Android
+boot image kernel at EL2 and passes the bootloader's own FDT in `x0`; the
+platform layer lives in `src/gs201/`.
+
+```shell
+$ make PLATFORM=gs201 USE_CLANG=1
+$ fastboot boot build/lynx.img
+```
+
+There is no accessible UART on this board. The live DECON framebuffer ABL
+leaves armed is the local console; m1n1 exposes its proxy as a USB CDC-ACM
+device before it hands off to a payload.
+
+After `fastboot boot`, wait for the CDC device and connect from this tree:
+
+```shell
+$ cd proxyclient
+$ M1N1DEVICE=/dev/ttyACM0 python3 -m m1n1.shell
+```
+
+An XNU image can be appended after m1n1's own image, at `_payload_start`.
+While a payload is present, m1n1 remains in the USB proxy for inspection and
+experimentation; run `p.exit()` in the proxy shell to send `P_EXIT`, leave the
+proxy loop, and chainload that payload:
+
+```shell
+$ scripts/mkimage-lynx.sh build/m1n1.bin lynx-xnu.img kernel.development.vmapple
+$ fastboot boot lynx-xnu.img
+```
+
+The loader accepts both `MH_EXECUTE` kernels (plain iBoot handoff: `x0` =
+boot_args at EL1 with the MMU off) and `MH_FILESET` kernelcaches.
+`config_sptm` builds -- `kernelcache.research.vphone600` among them -- are
+detected and refused: those are entered by Apple's Secure Page Table Monitor at
+GL2 and need a monitor stand-in, which this port does not provide.
+
+Two things a plain-handoff arm64e kernel needs that are easy to get wrong:
+
+* PAC must be *enabled* for EL1 (`HCR_EL2.API|APK`). With those bits clear,
+  every PAC instruction traps to EL2 (EC 0x09) and the kernel dies at its
+  first `pacibsp`; the same bits are what KVM sets in `HCR_HOST_NVHE_FLAGS`.
+* The image must land on a 2 MiB boundary. The kernel's early bootstrap
+  describes the image in 2 MiB units, so an unaligned physical base makes it
+  build page tables that point somewhere else, and it then executes the wrong
+  bytes.
+
+With both in place the VMAPPLE kernel runs its own early boot to the point
+where it trips its PAC-failure trap (`brk #0xbffd`, ESR EC 0x1c): its
+statically signed pointers were signed with the key material an Apple
+hypervisor hands over via `PAC_GET_DEFAULT_KEYS`, which this port cannot
+reproduce. Booting further needs either that key material, the kernel's PAC
+verification patched out, or PAC instructions emulated in the EL2 shim.
+
 ## Payloads
 
 m1n1 supports running payloads by simple concatenation:

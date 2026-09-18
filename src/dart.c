@@ -544,6 +544,10 @@ int dart_map_flags(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len, u32 
     uintptr_t paddr = (uintptr_t)bfr;
     u64 offset = 0;
 
+    /* No IOMMU: the device sees physical addresses directly. */
+    if (!dart)
+        return 0;
+
     if (len % SZ_16K)
         return -1;
     if (paddr % SZ_16K)
@@ -586,6 +590,9 @@ static void dart_unmap_page(dart_dev_t *dart, uintptr_t iova)
 
 void dart_unmap(dart_dev_t *dart, uintptr_t iova, size_t len)
 {
+    if (!dart)
+        return;
+
     if (len % SZ_16K)
         return;
     if (iova % SZ_16K)

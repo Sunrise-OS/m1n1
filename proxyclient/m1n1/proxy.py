@@ -401,8 +401,11 @@ class UartInterface(Reloadable):
         if self.debug:
             print("<< DATA:")
             chexdump(data)
-        for i in range(0, len(data), 8192):
-            self.dev.write(data[i:i + 8192])
+        # 64 KiB host writes: the device reads a byte stream (single iodev_read
+        # for the whole transfer), so chunk boundaries are invisible on the wire.
+        # Larger writes mean fewer syscalls/URBs for multi-MiB payloads.
+        for i in range(0, len(data), 65536):
+            self.dev.write(data[i:i + 65536])
             if progress:
                 sys.stdout.write(".")
                 sys.stdout.flush()

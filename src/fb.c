@@ -78,6 +78,18 @@ struct image orig_logo;
 void fb_update(void)
 {
     memcpy128(fb.hwptr, fb.ptr, fb.size);
+    /*
+     * On non-coherent display controllers (like Exynos/Tensor GS201 DPU RDMA),
+     * dirty cache lines must be cleaned to Point of Coherency (DRAM) so the
+     * display DMA scans out real pixels instead of uninitialized DRAM noise.
+     */
+    u8 *p = (u8 *)fb.hwptr;
+    u8 *end = p + fb.size;
+    while (p < end) {
+        dc_cvac(p);
+        p += 64;
+    }
+    sysop("dsb sy");
 }
 
 static void fb_clear_font_row(u32 row)
@@ -116,12 +128,16 @@ static inline rgb_t pixel2rgb_30(u32 c)
 
 static inline u32 rgb2pixel_24(rgb_t c)
 {
-    return c.b | (c.g << 8) | (c.r << 16);
+    /*
+     * On GS201 DECON IDMA XRGB8888, the memory bytes are ordered [X, R, G, B].
+     * In a little-endian 32-bit word, byte 0 is low: (B << 24) | (G << 16) | (R << 8) | 0.
+     */
+    return ((u32)c.b << 24) | ((u32)c.g << 16) | ((u32)c.r << 8);
 }
 
 static inline rgb_t pixel2rgb_24(u32 c)
 {
-    return (rgb_t){(c >> 16) & 0xff, (c >> 8) & 0xff, c};
+    return (rgb_t){(c >> 8) & 0xff, (c >> 16) & 0xff, (c >> 24) & 0xff};
 }
 
 static inline u32 rgb2pixel(rgb_t c)
@@ -402,7 +418,6 @@ void fb_clear_direct(void)
 
     memset64((void *)cur_boot_args.video.base, 0, fb_size);
 }
-
 void fb_init(bool clear)
 {
     void *custom_128, *custom_256;
@@ -414,11 +429,18 @@ void fb_init(bool clear)
     fb.size = cur_boot_args.video.stride * cur_boot_args.video.height;
     printf("fb init: %dx%d (%d) [s=%d] @%p\n", fb.width, fb.height, fb.depth, fb.stride, fb.hwptr);
 
-    mmu_add_mapping(cur_boot_args.video.base, cur_boot_args.video.base, ALIGN_UP(fb.size, 0x4000),
-                    MAIR_IDX_NORMAL_NC, PERM_RW);
+    /* Clear hardware FB and clean caches */
+    memset32(fb.hwptr, 0, fb.size / 4);
+    u8 *p = (u8 *)fb.hwptr;
+    for (size_t i = 0; i < fb.size; i += 64)
+        dc_cvac(p + i);
+    sysop("dsb sy");
 
     fb.ptr = malloc(fb.size);
-    memcpy(fb.ptr, fb.hwptr, fb.size);
+    if (fb.ptr)
+        memset32(fb.ptr, 0, fb.size / 4);
+    else
+        fb.ptr = fb.hwptr;
 
     // This is the touchbar, make everything tiny
     if (chip_id == T8012) {

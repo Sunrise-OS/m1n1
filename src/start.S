@@ -17,12 +17,39 @@
 
 .section .init, "ax"
 
+#ifdef PLATFORM_GS201
+/*
+ * ABL (Pixel 7a bootloader) requires a standard Linux ARM64 Image header
+ * at offset 0 of the kernel payload; without the "ARM\x64" magic at offset
+ * 0x38, ABL rejects the image and returns to fastboot mode.
+ */
+.globl _image_head
+_image_head:
+    b _start                    /* code0: branch to executable start */
+    .long 0                     /* code1 */
+    .quad 0                     /* text_offset: image load offset (LE) */
+    .quad 0x200000              /* image_size: effective size */
+    .quad 0xa                   /* flags: 2MB aligned, any page size */
+    .quad 0                     /* res2 */
+    .quad 0                     /* res3 */
+    .quad 0                     /* res4 */
+    .ascii "ARM\x64"            /* magic */
+    .long 0                     /* res5 */
+
+    /* Pad to 0x800 (2048 bytes) so _vectors_start retains its 2 KiB alignment */
+    .balign 2048
+#endif
+
 .align 11
 .globl _vectors_start
 _vectors_start:
 
     mov x9, '0'
+#ifdef PLATFORM_GS201
+    b _start
+#else
     b cpu_reset
+#endif
     .align 7
     mov x9, '1'
     b exc_unk
@@ -65,12 +92,88 @@ _vectors_start:
 .globl _start
 .type _start, @function
 _start:
+#ifdef PLATFORM_GS201
+    /*
+     * ABL enters us with the bootloader's FDT in x0 and both CPU-cluster
+     * watchdogs armed.  Disarm them and start from a known translation/cache
+     * state before touching DRAM: ABL may leave the MMU on with stale tables,
+     * and m1n1 relocates itself at whatever physical address it was loaded at.
+     */
+    mrs x8, CurrentEL
+    lsr x8, x8, #2
+
+    /* Disarm WTCON on cluster 0 and 1 */
+    movz x9, #0x0000
+    movk x9, #0x1006, lsl #16
+    str wzr, [x9]
+    movz x9, #0x0000
+    movk x9, #0x1007, lsl #16
+    str wzr, [x9]
+
+    /*
+     * Disarm PMU watchdog counter enables (NONCPU_OUT) and unmask reset:
+     * PMU base: 0x18060000
+     * 0x1220: CLUSTER0_NONCPU_OUT (bit 8 = wdt cnt en)
+     * 0x1420: CLUSTER1_NONCPU_OUT (bit 7 = wdt cnt en)
+     * 0x1244: CLUSTER0_NONCPU_INT_EN
+     * 0x1444: CLUSTER1_NONCPU_INT_EN
+     */
+    movz x9, #0x1806, lsl #16
+    movk x9, #0x1220
+    str wzr, [x9]
+    movz x9, #0x1806, lsl #16
+    movk x9, #0x1420
+    str wzr, [x9]
+    movz x9, #0x1806, lsl #16
+    movk x9, #0x1244
+    str wzr, [x9]
+    movz x9, #0x1806, lsl #16
+    movk x9, #0x1444
+    str wzr, [x9]
+
+    cmp x8, #3
+    b.eq .Lgs201_el3
+    cmp x8, #2
+    b.eq .Lgs201_el2
+    mrs x9, sctlr_el1
+    b .Lgs201_clr
+.Lgs201_el2:
+    mrs x9, sctlr_el2
+    b .Lgs201_clr
+.Lgs201_el3:
+    mrs x9, sctlr_el3
+.Lgs201_clr:
+    movz x10, #0x1005 /* M | C | I */
+    bic x9, x9, x10
+    cmp x8, #3
+    b.eq .Lgs201_w3
+    cmp x8, #2
+    b.eq .Lgs201_w2
+    msr sctlr_el1, x9
+    b .Lgs201_done
+.Lgs201_w2:
+    msr sctlr_el2, x9
+    b .Lgs201_done
+.Lgs201_w3:
+    msr sctlr_el3, x9
+.Lgs201_done:
+    isb
+    ic iallu
+    dsb sy
+    isb
+#endif
     mov x19, x0
 
     mov w0, 'm'
     bl debug_putc
 
+    /*
+     * On GS201, m1n1 is booted by ABL at an arbitrary load address in DRAM.
+     * Before apply_rela runs, PC-relative addressing works (adrp/add),
+     * but we must calculate SP relative to our current runtime base!
+     */
     adrp x1, _stack_bot
+    add x1, x1, :lo12:_stack_bot
     mov sp, x1
 
     mov w0, '1'
@@ -103,7 +206,11 @@ _start:
 
     mov x0, x19
     mov x1, x20
+#ifdef PLATFORM_GS201
+    bl gs201_main
+#else
     bl _start_c
+#endif
     b .
 
 start_el3:
