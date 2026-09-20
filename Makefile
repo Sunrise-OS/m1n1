@@ -65,6 +65,12 @@ BASE_CFLAGS := -O2 -Wall -g -Wundef -Werror=strict-prototypes -fno-common -fno-P
 	-fno-stack-protector -mstrict-align -march=armv8.2-a \
 	$(EXTRA_CFLAGS)
 
+# GS201/lynx (Google Tensor G2) platform build. Selects the non-Apple platform
+# layer; see src/gs201/.
+ifeq ($(PLATFORM),gs201)
+BASE_CFLAGS += -DPLATFORM_GS201=1
+endif
+
 CFLAGS := $(BASE_CFLAGS) -mgeneral-regs-only
 
 CFG :=
@@ -183,6 +189,17 @@ OBJECTS := \
 	$(DCP_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS)
 
+# GS201 replaces the Apple platform layer wholesale: the SoC has no ADT, no
+# AIC/PMGR/DART and no iBoot boot_args, so the entry code, UART driver,
+# exception handler, watchdog and USB bring-up come from src/gs201/ instead.
+EXTRA_TARGETS :=
+ifeq ($(PLATFORM),gs201)
+OBJECTS := $(filter-out exception.o uart.o usb.o wdt.o,$(OBJECTS)) \
+	gs201/platform.o gs201/uart.o gs201/video.o gs201/exc.o gs201/usb.o \
+	gs201/wdt.o gs201/xnu.o gs201/afdt.o
+EXTRA_TARGETS += build/lynx.img
+endif
+
 FP_OBJECTS := \
 	kboot_gpu.o \
 	math/expf.o \
@@ -201,7 +218,7 @@ TARGET_RAW := m1n1.bin
 DEPDIR := build/.deps
 
 .PHONY: all clean format invoke_cc always_rebuild
-all: build/$(TARGET) build/$(TARGET_RAW)
+all: build/$(TARGET) build/$(TARGET_RAW) $(EXTRA_TARGETS)
 clean:
 	rm -rf build/* build/.deps
 format:
@@ -268,6 +285,12 @@ build/$(NAME).bin: build/$(NAME)-asahi.bin build/$(LOGO).logo
 	$(QUIET)echo "  RAW   $@"
 	$(QUIET)cat $^ > $@
 endif
+
+# Android boot image for `fastboot boot` on lynx.  XNU_PAYLOAD=<mach-o> appends
+# an XNU image (4 KiB aligned) that the gs201 platform boots on start-up.
+build/lynx.img: build/$(NAME).bin scripts/mkimage-lynx.sh
+	$(QUIET)echo "  IMG   $@"
+	$(QUIET)scripts/mkimage-lynx.sh build/$(NAME).bin $@ $(XNU_PAYLOAD)
 
 .INTERMEDIATE: build-tag build-cfg
 build-tag src/../build/build_tag.h &:

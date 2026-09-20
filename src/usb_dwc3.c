@@ -436,6 +436,13 @@ static int usb_dwc3_ep_start_transfer(dwc3_dev_t *dev, u8 ep, uintptr_t trb_iova
         return -1;
     }
 
+    if (!dev->dart) {
+        dc_cvac(dev->endpoints[ep].trb);
+        for (size_t i = 0; i < XFER_BUFFER_BYTES_PER_EP; i += 64)
+            dc_cvac((u8 *)dev->endpoints[ep].xfer_buffer + i);
+        sysop("dsb sy");
+    }
+
     dma_wmb();
     int ret =
         usb_dwc3_ep_command(dev, ep, DWC3_DEPCMD_STARTTRANSFER, trb_iova >> 32, (u32)trb_iova, 0);
@@ -457,10 +464,12 @@ static uintptr_t usb_dwc3_init_trb(dwc3_dev_t *dev, u8 ep, struct dwc3_trb **trb
 
     next_trb->ctrl = DWC3_TRB_CTRL_HWO | DWC3_TRB_CTRL_ISP_IMI | DWC3_TRB_CTRL_LST;
     next_trb->size = DWC3_TRB_SIZE_LENGTH(0);
-    next_trb->bph = 0;
-    next_trb->bpl = dev->endpoints[ep].xfer_buffer_iova;
+    uintptr_t buf_addr =
+        dev->dart ? dev->endpoints[ep].xfer_buffer_iova : (uintptr_t)dev->endpoints[ep].xfer_buffer;
+    next_trb->bph = buf_addr >> 32;
+    next_trb->bpl = buf_addr;
 
-    return dev->endpoints[ep].trb_iova;
+    return dev->dart ? dev->endpoints[ep].trb_iova : (uintptr_t)next_trb;
 }
 
 static int usb_dwc3_run_data_trb(dwc3_dev_t *dev, u8 ep, u32 data_len)
@@ -535,7 +544,8 @@ static void usb_build_serial(void)
     if (str_serial)
         return;
 
-    const char *serial = adt_getprop(adt, 0, "serial-number", NULL);
+    /* Non-Apple platforms have no ADT; do not enter the Rust ADT parser with NULL. */
+    const char *serial = adt ? adt_getprop(adt, 0, "serial-number", NULL) : NULL;
     if (!serial || !serial[0]) {
         str_serial = &str_serial_dummy;
         return;
@@ -628,7 +638,10 @@ static void usb_dwc3_ep0_handle_standard_device(dwc3_dev_t *dev,
         case USB_REQUEST_SET_ADDRESS:
             mask32(dev->regs + DWC3_DCFG, DWC3_DCFG_DEVADDR_MASK,
                    DWC3_DCFG_DEVADDR(setup->set_address.address));
-            dev->ep0_state = USB_DWC3_EP0_STATE_DATA_SEND_STATUS;
+            if (usb_dwc3_start_status_phase(dev, USB_LEP_CTRL_IN))
+                usb_dwc3_ep_set_stall(dev, USB_LEP_CTRL_IN, 1);
+            else
+                dev->ep0_state = USB_DWC3_EP0_STATE_DATA_SEND_STATUS_DONE;
             break;
 
         case USB_REQUEST_SET_CONFIGURATION:
@@ -645,8 +658,7 @@ static void usb_dwc3_ep0_handle_standard_device(dwc3_dev_t *dev,
                         dev->pipe[i].ready = false;
                     break;
                 case 1:
-                    /* we've already configured these endpoints so that we just need to enable them
-                     * here */
+                    /* We've already configured these endpoints; enable them now. */
                     set32(dev->regs + DWC3_DALEPENA, DWC3_DALEPENA_EP(USB_LEP_CDC_BULK_OUT));
                     set32(dev->regs + DWC3_DALEPENA, DWC3_DALEPENA_EP(USB_LEP_CDC_BULK_IN));
                     set32(dev->regs + DWC3_DALEPENA, DWC3_DALEPENA_EP(USB_LEP_CDC_INTR_IN));
@@ -659,6 +671,12 @@ static void usb_dwc3_ep0_handle_standard_device(dwc3_dev_t *dev,
                     usb_dwc3_ep_set_stall(dev, 0, 1);
                     dev->ep0_state = USB_DWC3_EP0_STATE_IDLE;
                     break;
+            }
+            if (dev->ep0_state != USB_DWC3_EP0_STATE_IDLE) {
+                if (usb_dwc3_start_status_phase(dev, USB_LEP_CTRL_IN))
+                    usb_dwc3_ep_set_stall(dev, USB_LEP_CTRL_IN, 1);
+                else
+                    dev->ep0_state = USB_DWC3_EP0_STATE_DATA_SEND_STATUS_DONE;
             }
             break;
 
@@ -1080,11 +1098,16 @@ void usb_dwc3_handle_events(dwc3_dev_t *dev)
     if (!dev)
         return;
 
-    u32 n_events = read32(dev->regs + DWC3_GEVNTCOUNT(0)) / sizeof(union dwc3_event);
+    u32 n_events =
+        (read32(dev->regs + DWC3_GEVNTCOUNT(0)) & DWC3_GEVNTCOUNT_MASK) / sizeof(union dwc3_event);
     if (n_events == 0)
         return;
 
-    dma_rmb();
+    if (!dev->dart) {
+        for (size_t i = 0; i < DWC3_EVENT_BUFFERS_SIZE; i += 64)
+            dc_civac((u8 *)dev->evtbuffer + i);
+        sysop("dsb sy");
+    }
 
     const union dwc3_event *evtbuffer = dev->evtbuffer;
     for (u32 i = 0; i < n_events; ++i) {
@@ -1154,11 +1177,14 @@ dwc3_dev_t *usb_dwc3_init(uintptr_t regs, dart_dev_t *dart)
     for (int i = 0; i < MAX_ENDPOINTS; ++i) {
         u32 xferbuffer_offset = i * XFER_BUFFER_BYTES_PER_EP;
         dev->endpoints[i].xfer_buffer = dev->xferbuffer + xferbuffer_offset;
-        dev->endpoints[i].xfer_buffer_iova = XFER_BUFFER_IOVA + xferbuffer_offset;
+        dev->endpoints[i].xfer_buffer_iova = dev->dart ? XFER_BUFFER_IOVA + xferbuffer_offset
+                                                       : (uintptr_t)dev->endpoints[i].xfer_buffer;
 
         u32 trb_offset = i * TRBS_PER_EP;
         dev->endpoints[i].trb = &dev->trbs[i * TRBS_PER_EP];
-        dev->endpoints[i].trb_iova = TRB_BUFFER_IOVA + trb_offset * sizeof(struct dwc3_trb);
+        dev->endpoints[i].trb_iova = dev->dart
+                                         ? TRB_BUFFER_IOVA + trb_offset * sizeof(struct dwc3_trb)
+                                         : (uintptr_t)dev->endpoints[i].trb;
     }
 
     /* reset the device side of the controller */
@@ -1189,19 +1215,20 @@ dwc3_dev_t *usb_dwc3_init(uintptr_t regs, dart_dev_t *dart)
     /* stick to USB 2.0 high speed for now */
     mask32(dev->regs + DWC3_DCFG, DWC3_DCFG_SPEED_MASK, DWC3_DCFG_HIGHSPEED);
 
-    /* setup scratchpad at SCRATCHPAD_IOVA */
-    if (usb_dwc3_command(dev, DWC3_DGCMD_SET_SCRATCHPAD_ADDR_LO, SCRATCHPAD_IOVA)) {
+    /* The GS201 has no Apple DART: DWC3 sees physical DRAM directly. */
+    uintptr_t scratchpad_addr = dev->dart ? SCRATCHPAD_IOVA : (uintptr_t)dev->scratchpad;
+    if (usb_dwc3_command(dev, DWC3_DGCMD_SET_SCRATCHPAD_ADDR_LO, scratchpad_addr)) {
         usb_debug_printf("DWC3_DGCMD_SET_SCRATCHPAD_ADDR_LO failed.");
         goto error;
     }
-    if (usb_dwc3_command(dev, DWC3_DGCMD_SET_SCRATCHPAD_ADDR_HI, 0)) {
+    if (usb_dwc3_command(dev, DWC3_DGCMD_SET_SCRATCHPAD_ADDR_HI, scratchpad_addr >> 32)) {
         usb_debug_printf("DWC3_DGCMD_SET_SCRATCHPAD_ADDR_HI failed.");
         goto error;
     }
 
-    /* setup a single event buffer at EVENT_BUFFER_IOVA */
-    write32(dev->regs + DWC3_GEVNTADRLO(0), EVENT_BUFFER_IOVA);
-    write32(dev->regs + DWC3_GEVNTADRHI(0), 0);
+    uintptr_t event_addr = dev->dart ? EVENT_BUFFER_IOVA : (uintptr_t)dev->evtbuffer;
+    write32(dev->regs + DWC3_GEVNTADRLO(0), event_addr);
+    write32(dev->regs + DWC3_GEVNTADRHI(0), event_addr >> 32);
     write32(dev->regs + DWC3_GEVNTSIZ(0), DWC3_EVENT_BUFFERS_SIZE);
     write32(dev->regs + DWC3_GEVNTCOUNT(0), 0);
 
