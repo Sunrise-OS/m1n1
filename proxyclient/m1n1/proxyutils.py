@@ -59,6 +59,9 @@ class ProxyUtils(Reloadable):
             self.ba = self.iface.readstruct(self.ba_addr, BootArgs_r2)
         elif  self.ba_rev == 3:
             self.ba = self.iface.readstruct(self.ba_addr, BootArgs_r3)
+        else:
+            raise ValueError(f"Unsupported boot-args revision {self.ba_rev:#x} "
+                             f"at {self.ba_addr:#x}")
 
         # We allocate a 128MB heap, 128MB after the m1n1 heap, without telling it about it.
         # This frees up from having to coordinate memory management or free stuff after a Python
@@ -78,6 +81,12 @@ class ProxyUtils(Reloadable):
             self.heap_base = int(os.environ.get("M1N1HEAP", ""), 16)
 
         self.heap_base += m1n1_heap
+        if not self.ba.devtree_size:
+            # Non-Apple platforms publish physical RAM bounds, but no ADT.
+            ram_end = self.ba.phys_base + self.ba.mem_size
+            self.heap_size = min(self.heap_size, ram_end - self.heap_base)
+            if self.heap_size < self.CODE_BUFFER_SIZE + 0x1000:
+                raise ValueError("Insufficient RAM for the proxy client heap")
         try:
             p.heapblock_set_limit(self.heap_base)
         except ProxyRemoteError:
@@ -266,6 +275,8 @@ class ProxyUtils(Reloadable):
     def get_adt(self):
         if self.adt_data is not None:
             return self.adt_data
+        if not self.ba.devtree_size:
+            raise ValueError("No ADT on this platform")
         adt_base = (self.ba.devtree - self.ba.virt_base + self.ba.phys_base) & 0xffffffffffffffff
         adt_size = self.ba.devtree_size
         print(f"Fetching ADT ({adt_size} bytes)...")

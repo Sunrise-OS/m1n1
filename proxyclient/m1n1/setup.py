@@ -28,4 +28,7 @@ fb = u.ba.video.base
 
 print(f"m1n1 base: 0x{u.base:x}")
 
-PMU(u).reset_panic_counter()
+if u.ba.devtree_size:
+    PMU(u).reset_panic_counter()
+else:
+    print("No ADT; skipping PMU panic-counter reset")
